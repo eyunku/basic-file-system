@@ -49,20 +49,20 @@ static struct fuse_operations wfs_ops = {
 };
 
 int main(int argc, char *argv[]) {
-    if (argc < 3) {
+    if (argc < 3 || argv[argc - 2][0] == '-' || argv[argc - 1][0] == '-') {
         fprintf(stderr, "Usage: %s [FUSE options] disk_path mount_point\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    disk_path = argv[argc - 2];
+    // Get the disk_path and mount_point
+    disk_path = realpath(argv[argc - 2], NULL);
     mount_point = argv[argc - 1];
 
-    // Filter out program-specific arguments
-    char *fuse_argv[argc - 1];
-    for (int i = 1; i < argc - 1; ++i) {
-        fuse_argv[i - 1] = argv[i];
-    }
+    // Set up FUSE-specific arguments
+    argv[argc - 2] = argv[argc - 1];
+    argv[argc - 1] = NULL;
+    --argc;
 
     // Initialize FUSE with specified operations
-    return fuse_main(argc - 1, fuse_argv, &wfs_ops, NULL);
+    return fuse_main(argc, argv, &wfs_ops, NULL);
 }
