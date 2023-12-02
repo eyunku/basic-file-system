@@ -16,12 +16,12 @@ static int init_filesystem(const char *path) {
     // Initialize the superblock
     struct wfs_sb superblock = {
         .magic = WFS_MAGIC,
-        .head = sizeof(struct wfs_sb) + sizeof(struct wfs_log_entry)  // Start of the next available space after the superblock
+        .head = (sizeof(struct wfs_sb)+sizeof(struct wfs_log_entry)) // Start of the next available space
     };
 
-    // Write the superblock to the file (The beginning of the log)
+    // Write the superblock to the file
     if (write(fd, &superblock, sizeof(struct wfs_sb)) == -1) {
-        perror("Error writing superblock (The beginning of the log)");
+        perror("Error writing superblock");
         close(fd);
         return -1;
     }
@@ -29,16 +29,18 @@ static int init_filesystem(const char *path) {
     // Create the root log entry
     struct wfs_log_entry root_entry = {
         .inode = {
-            .inode_number = 0,  // Assuming root has inode number 0
+            .inode_number = 0,  // Root has inode number 0
             .deleted = 0,
             .mode = S_IFDIR,    // Root is a directory
-            // TODO?: Set other inode fields as needed
+            .flags = 0,
+            .size = 0,
+            // TODO: Set other inode fields
         }
     };
 
-    // Write the root log entry to the file (Appending to the log)
+    // Write the root log entry to the file
     if (write(fd, &root_entry, sizeof(struct wfs_log_entry)) == -1) {
-        perror("Error writing root log entry (Appending to the log)");
+        perror("Error writing root log entry");
         close(fd);
         return -1;
     }
