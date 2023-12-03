@@ -4,6 +4,9 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h> 
+#include <time.h>
 
 static int init_filesystem(const char *path) {
     // Open the file for read-write, create if not exists, truncate to zero length
@@ -16,7 +19,7 @@ static int init_filesystem(const char *path) {
     // Initialize the superblock
     struct wfs_sb superblock = {
         .magic = WFS_MAGIC,
-        .head = (sizeof(struct wfs_sb)+sizeof(struct wfs_log_entry)) // Start of the next available space
+        .head = (sizeof(struct wfs_sb) + sizeof(struct wfs_log_entry)) // Start of the next available space
     };
 
     // Write the superblock to the file
@@ -27,20 +30,23 @@ static int init_filesystem(const char *path) {
     }
 
     // Create the root log entry
-    struct wfs_log_entry root_entry = {
-        .inode = {
-            .inode_number = 0,  // Root has inode number 0
-            .deleted = 0,
-            .mode = S_IFDIR,    // Root is a directory
-            .flags = 0,
-            .size = 0,
-            // TODO: Set other inode fields
-        }
+    struct wfs_inode root_inode = {
+        .inode_number = 0,        // Root has inode number 0
+        .deleted = 0,             // Root is not deleted
+        .mode = S_IFDIR,          // Root is a directory
+        .uid = getuid(),          // User id of the owner
+        .gid = getgid(),          // Group id of the owner
+        .flags = 0,               // Set the appropriate flags
+        .size = 0,                // Initialize size to 0 for a directory
+        .atime = time(NULL),      // Set the current time as the access time
+        .mtime = time(NULL),      // Set the current time as the modify time
+        .ctime = time(NULL),      // Set the current time as the inode change time
+        .links = 1                // Number of hard links to this file (always set to 1)
     };
 
-    // Write the root log entry to the file
-    if (write(fd, &root_entry, sizeof(struct wfs_log_entry)) == -1) {
-        perror("Error writing root log entry");
+    // Write the root inode to the file
+    if (write(fd, &root_inode, sizeof(struct wfs_inode)) == -1) {
+        perror("Error writing root inode");
         close(fd);
         return -1;
     }
