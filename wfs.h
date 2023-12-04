@@ -3,11 +3,17 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
 
 #define MAX_FILE_NAME_LEN 32
 #define WFS_MAGIC 0xdeadbeef
 
-struct wfs_wb {
+struct wfs_sb {
     uint32_t magic;
     uint32_t head;
 };

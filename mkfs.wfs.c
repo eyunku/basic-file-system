@@ -1,12 +1,7 @@
+#define _POSIX_C_SOURCE 200809L
 #include "wfs.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h> 
 #include <time.h>
+#include <sys/stat.h>
 
 static int init_filesystem(const char *path) {
     // Open the file for read-write, create if not exists, truncate to zero length
