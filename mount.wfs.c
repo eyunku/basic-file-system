@@ -166,9 +166,28 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
 }
 
 static int wfs_mkdir(const char *path, mode_t mode) {
+    // If pathname already exists, or is a symbolic link, fail with EEXIST
+    if (get_number(path) >= 0) return -EEXIST;
+    
     // Create a new log entry for the directory
+    struct wfs_log_entry *new_log;
     // Set the mode and other attributes based on the provided arguments
+    struct wfs_inode inode;
+    inode.inode_number = get_largest_inumber() + 1;
+    inode.deleted = 0;
+    inode.mode = mode;
+    inode.uid = getuid();
+    inode.gid = getgid();
+    inode.flags = 0;
+    inode.size = 0;
+    inode.atime = time(NULL);
+    inode.mtime = time(NULL);
+    inode.ctime = time(NULL);
+    inode.links = 1;
+    new_log->inode = inode;
     // Update the log
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(new_log));
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(new_log);
     return 0;
 }
 
