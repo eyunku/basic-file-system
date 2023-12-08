@@ -7,10 +7,18 @@
 static const char *disk_path = NULL;
 static char *mapped_disk = NULL;
 
-// Helper function to get inode number from path
-static unsigned long get_inode_number_from_path(const char *path) {
+/**
+ * Get the inode number from a given path. Iterates over disk space.
+ * 
+ * Parameters:
+ *  path (const char*): the path, represented as a string.
+ * 
+ * Returns:
+ *  ulong: the inode number associated with the path.
+*/
+static ulong get_inumber(const char *path) {
     // Start with the root inode number
-    unsigned long current_inode_number = 0;
+    ulong current_inode_number = 0;
 
     // Make a copy of the path since strtok modifies the string
     char path_copy[strlen(path) + 1];
@@ -40,7 +48,7 @@ static unsigned long get_inode_number_from_path(const char *path) {
         struct wfs_dentry *dir_entry = (struct wfs_dentry *)latest_matching_entry->data;
         int directory_offset = 0;
         while (directory_offset < latest_matching_entry->inode.size) {
-            if (strcmp(dir_entry->name, token) == 0) {
+            if (!strcmp(dir_entry->name, token)) {
                 found = 1;
                 current_inode_number = dir_entry->inode_number;
                 break;
@@ -60,41 +68,42 @@ static unsigned long get_inode_number_from_path(const char *path) {
     return current_inode_number;
 }
 
-// Helper function to find inode from inode number
-static struct wfs_inode *get_inode(unsigned int inode_number) {
+
+/**
+ * Get the live inode associated with the given inode number.
+ * 
+ * Parameters:
+ *  inode_number (uint): inode number of the inode.
+ * 
+ * Returns:
+ *  wfs_inode*: pointer to inode structure associated with inode number.
+*/
+static struct wfs_inode *get_inode(uint inode_number) {
     // Start at the end of the superblock
     char *current_position = mapped_disk + sizeof(struct wfs_sb);
-    struct wfs_inode *latest_matching_entry = NULL;
+    struct wfs_inode *inode = NULL;
+
     // Iterate through the log entries until we reach the head
     while (current_position < mapped_disk + ((struct wfs_sb *)mapped_disk)->head) {
-        // Convert the current position to a wfs_log_entry pointer
         struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
-
-        // Check if the current entry has the desired inode number
-        if (current_entry->inode.inode_number == inode_number && current_entry->inode.deleted == 0) {
-            // Found the inode, return a pointer to it
-            latest_matching_entry = &(current_entry->inode);
+        if (current_entry->inode.inode_number == inode_number && !current_entry->inode.deleted) {
+            if(inode != NULL && inode->mtime > current_entry->inode.mtime)
+                inode = &(current_entry->inode);
         }
-
-        // Move to the next log entry
         current_position += current_entry->inode.size + sizeof(struct wfs_inode);
     }
 
-    // Inode not found
-    return latest_matching_entry;
+    return inode;
 }
 
-// Get attributes of a file
 static int wfs_getattr(const char *path, struct stat *stbuf) {
     // Find the inode for the given path using the get_inode helper function
-    unsigned long inode_number = get_inode_number_from_path(path);
-
+    ulong inode_number = get_inumber(path);
     if (inode_number == -1) {
         return -ENOENT; // Error: File not found
     }
 
     struct wfs_inode *inode = get_inode(inode_number);
-
     if (inode == NULL) {
         return -ENOENT; // Error: Inode not found
     }
@@ -108,10 +117,9 @@ static int wfs_getattr(const char *path, struct stat *stbuf) {
     stbuf->st_nlink = inode->links;
     stbuf->st_size = inode->size;
 
-    return 0; // Success
+    return 0;
 }
 
-// Create a new file node (e.g., regular file, device, etc.)
 static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     // Create a new log entry for the file
     // Set the mode and other attributes based on the provided arguments
@@ -119,7 +127,6 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     return 0;
 }
 
-// Create a new directory
 static int wfs_mkdir(const char *path, mode_t mode) {
     // Create a new log entry for the directory
     // Set the mode and other attributes based on the provided arguments
@@ -127,19 +134,16 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     return 0;
 }
 
-// Read data from a file
 static int wfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     (void) fi; // Unused parameter
 
     // Find the inode for the given path using the get_inode helper function
-    unsigned long inode_number = get_inode_number_from_path(path);
-
+    ulong inode_number = get_inumber(path);
     if (inode_number == -1) {
         return -ENOENT; // Error: File not found
     }
 
     struct wfs_inode *inode = get_inode(inode_number);
-
     if (inode == NULL) {
         return -ENOENT; // Error: Inode not found
     }
@@ -180,7 +184,6 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
     return read_size; // Return the actual number of bytes read
 }
 
-// Write data to a file
 static int wfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     // Use the path to find the corresponding entry in the log
     // Write data to the log entry starting from the specified offset
@@ -188,20 +191,17 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     return size;
 }
 
-// Read directory entries
 static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
     (void) offset; // Unused parameter
     (void) fi; // Unused parameter
 
     // Find the inode for the given path using the get_inode helper function
-    unsigned long inode_number = get_inode_number_from_path(path);
-
+    ulong inode_number = get_inumber(path);
     if (inode_number == -1) {
         return -ENOENT; // Error: File not found
     }
 
     struct wfs_inode *inode = get_inode(inode_number);
-
     if (inode == NULL) {
         return -ENOENT; // Error: Inode not found
     }
@@ -239,7 +239,6 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
     return 0;
 }
 
-// Remove a file
 static int wfs_unlink(const char *path) {
     // Use the path to find the corresponding entry in the log
     // Mark the entry as deleted in the log
