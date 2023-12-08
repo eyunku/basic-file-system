@@ -4,8 +4,27 @@
 #include <errno.h>
 #include <sys/mman.h>
 
-static const char *disk_path = NULL;
-static char *mapped_disk = NULL;
+static const char *disk_path = NULL; // absolute path to disk
+static char *mapped_disk = NULL; // address of disk
+
+/**
+ * Finds the largest inode number in the disk.
+ * 
+ * Returns:
+ *  ulong: the largest inode number in the disk.
+*/
+static ulong get_largest_inumber() {
+    ulong max_inode_number = 0;
+    char *current_position = mapped_disk + sizeof(struct wfs_sb);
+
+    while(current_position < mapped_disk + ((struct wfs_sb *)mapped_disk)->head) {
+        struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
+        if (current_entry->inode.inode_number > max_inode_number)
+            max_inode_number = current_entry->inode.inode_number;
+    }
+
+    return max_inode_number;
+}
 
 /**
  * Get the inode number from a given path. Iterates over disk space.
@@ -68,7 +87,6 @@ static ulong get_inumber(const char *path) {
     return current_inode_number;
 }
 
-
 /**
  * Get the live inode associated with the given inode number.
  * 
@@ -121,9 +139,29 @@ static int wfs_getattr(const char *path, struct stat *stbuf) {
 }
 
 static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
+    // If pathname already exists, or is a symbolic link, fail with EEXIST
+    if (get_inumber(path) >= 0) return -EEXIST;
+
     // Create a new log entry for the file
+    struct wfs_log_entry *new_log;
     // Set the mode and other attributes based on the provided arguments
+    struct wfs_inode inode;
+    inode.inode_number = get_largest_inumber() + 1;
+    inode.deleted = 0;
+    inode.mode = mode;
+    inode.uid = getuid();
+    inode.gid = getgid();
+    inode.flags = 0;
+    inode.size = 0;
+    inode.atime = time(NULL);
+    inode.mtime = time(NULL);
+    inode.ctime = time(NULL);
+    inode.links = 1;
+    new_log->inode = inode;
     // Update the log
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(new_log));
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(new_log);
+    
     return 0;
 }
 

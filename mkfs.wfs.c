@@ -1,6 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
 #include "wfs.h"
-#include <time.h>
 #include <sys/stat.h>
 
 static int init_filesystem(const char *path) {
