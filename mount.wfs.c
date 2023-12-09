@@ -201,17 +201,40 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
     if (!S_ISREG(inode->mode)) return -EISDIR; // Error: Not a regular file
 
     // Calculate the maximum number of bytes that can be read
-    size_t max_read_size = inode->size - offset;
-    size_t read_size = (size < max_read_size) ? size : max_read_size;
-    if (read_size < 0) return 0;
+    size_t max_size = inode->size - offset;
+    size_t size = (size < max_size) ? size : max_size;
+    if (size < 0) return 0;
 
     // Copy data from the log entry to the buffer
     memcpy(buf, ((struct wfs_log_entry *)inode)->data + offset, size);
 
-    return read_size; // Return the actual number of bytes read
+    return size; // Return the actual number of bytes read
 }
 
 static int wfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    struct wfs_inode *inode;
+    if (fi && fi->fh) { // file handle provided
+        inode = (struct wfs_inode *)fi->fh;
+    } else {
+        ulong inode_number = get_inumber(path);
+        if (inode_number == -1) return -ENOENT;
+        
+        inode = get_inode(inode_number);
+        if (inode == NULL) return -ENOENT;
+    }
+
+    if (!S_ISREG(inode->mode)) return -EISDIR; // Error: Not a regular file
+
+    // Calculate the maximum number of bytes that can be read
+    size_t max_size = inode->size - offset;
+    size_t size = (size < max_size) ? size : max_size;
+    if (size < 0) return 0;
+
+    // Copy data from the log entry to the buffer
+    memcpy(((struct wfs_log_entry *)inode)->data + offset, buf, size);
+
+    return size; // Return the actual number of bytes read
+
     return size;
 }
 
