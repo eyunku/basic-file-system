@@ -154,6 +154,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     inode.links = 1;
     new_log->inode = inode;
     // Update the log
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(new_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(new_log);
     
@@ -181,6 +182,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     inode.links = 1;
     new_log->inode = inode;
     // Update the log
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(new_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(new_log);
     return 0;
@@ -190,6 +192,8 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
     struct wfs_inode *inode;
     if (fi && fi->fh) { // file handle provided
         inode = (struct wfs_inode *)fi->fh;
+        if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
+            return -EBADF;
     } else {
         ulong inode_number = get_inumber(path);
         if (inode_number == -1) return -ENOENT;
@@ -197,8 +201,7 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
         inode = get_inode(inode_number);
         if (inode == NULL) return -ENOENT;
     }
-
-    if (!S_ISREG(inode->mode)) return -EISDIR; // Error: Not a regular file
+    if (!S_ISREG(inode->mode)) return -EISDIR;
 
     // Calculate the maximum number of bytes that can be read
     size_t max_size = inode->size - offset;
@@ -215,6 +218,8 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     struct wfs_inode *inode;
     if (fi && fi->fh) { // file handle provided
         inode = (struct wfs_inode *)fi->fh;
+        if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
+            return -EBADF;
     } else {
         ulong inode_number = get_inumber(path);
         if (inode_number == -1) return -ENOENT;
@@ -222,8 +227,7 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
         inode = get_inode(inode_number);
         if (inode == NULL) return -ENOENT;
     }
-
-    if (!S_ISREG(inode->mode)) return -EISDIR; // Error: Not a regular file
+    if (!S_ISREG(inode->mode)) return -EISDIR;
 
     // Calculate the maximum number of bytes that can be read
     size_t max_size = inode->size - offset;
@@ -242,6 +246,8 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
     struct wfs_inode *inode;
     if (fi && fi->fh) { // file handle provided
         inode = (struct wfs_inode *)fi->fh;
+        if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
+            return -EBADF;
     } else {
         ulong inode_number = get_inumber(path);
         if (inode_number == -1) return -ENOENT;
@@ -249,21 +255,15 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
         inode = get_inode(inode_number);
         if (inode == NULL) return -ENOENT;
     }
-    if (!S_ISREG(inode->mode)) return -EISDIR; // Error: Not a regular file
+    if (!S_ISDIR(inode->mode)) return -EISNAM; // Error: Not a directory
 
-    // Log entry and inode start at same point
     struct wfs_log_entry *log = (struct wfs_log_entry *)inode;
-
-    // Look through the directory entries to find the filenames
-    struct wfs_dentry *dir_entry = (struct wfs_dentry *)log->data;
-    int directory_offset = offset;
-    while (directory_offset < log->inode.size) {
-        // Use the filler function to provide directory entries to FUSE
-        filler(buf, dir_entry->name, NULL, 0);
-        // Move to the next directory entry
-        directory_offset += sizeof(struct wfs_dentry);
-        dir_entry++;
+    struct wfs_dentry *directory = (struct wfs_dentry *)(log->data + offset);
+    while (directory < log + sizeof(inode) + inode->size) {
+        filler(buf, directory->name, NULL, directory - mapped_disk);
+        directory += sizeof(struct wfs_dentry);
     }
+
     return 0;
 }
 
