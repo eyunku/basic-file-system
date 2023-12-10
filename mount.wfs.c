@@ -152,7 +152,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     inode.links = 1;
     new_log->inode = inode;
     // Update the log
-    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) return -ENOSPC;
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
     
@@ -182,9 +182,54 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     inode.links = 1;
     new_log->inode = inode;
     // Update the log
-    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) return -ENOSPC;
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
+
+    // Update parent
+    char *name = basename(path);
+    char *parent = dirname(path);
+    // Create directory entry for new directory
+    struct wfs_dentry new_dentry = {
+        .name = name,
+        .inode_number = inode.inode_number,
+    };
+    // Get existing parent inode
+    ulong parent_inode_number = get_inumber(path);
+    if (parent_inode_number == -1) return -ENOENT; 
+    struct wfs_inode *parent_inode = get_inode(parent_inode_number);
+    if (parent_inode_number == NULL) return -ENOENT;
+    struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode_number;
+    // Create new inode entry for parent
+    struct wfs_inode new_parent_inode;
+    new_parent_inode.inode_number = parent_log->inode.inode_number;
+    new_parent_inode.deleted = 0;
+    new_parent_inode.mode = parent_log->inode.mode;
+    new_parent_inode.uid = parent_log->inode.uid;
+    new_parent_inode.gid = parent_log->inode.gid;
+    new_parent_inode.flags = parent_log->inode.flags;
+    new_parent_inode.size = parent_log->inode.size + sizeof(new_dentry);
+    new_parent_inode.atime = time(NULL);
+    new_parent_inode.mtime = time(NULL);
+    new_parent_inode.ctime = time(NULL);
+    new_parent_inode.links = parent_log->inode.links;
+    // Update data
+    char *data = malloc(new_parent_inode.size);
+    memcpy(data, parent_log->data, parent_log->inode.size);
+    memcpy(data + parent_log->inode.size, &new_dentry, sizeof(new_dentry));
+    // Create new log entry for parent
+    struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + sizeof(*data));
+    new_parent_log->inode = new_parent_inode;
+    memcpy(new_parent_log->data, data, sizeof(*data));
+    // Update the log
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log, sizeof(*new_parent_log));
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_parent_log);
+
+    // Free allocated space
+    free(data);
+    free(new_parent_log);
+
     return 0;
 }
 
@@ -253,11 +298,11 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     new_inode.mtime = time(NULL);
     new_inode.links = inode->links;
     // Update data
-    char *new_data = calloc(1, size + grow_size);
+    char *new_data = malloc(size + grow_size);
     memcpy(new_data, ((struct wfs_log_entry *)inode)->data, inode->size);
     memcpy(new_data + offset, buf, size);
     // Create a new log entry for the directory
-    struct wfs_log_entry *new_log = calloc(1, sizeof(new_inode) + sizeof(*new_data));
+    struct wfs_log_entry *new_log = malloc(sizeof(new_inode) + sizeof(*new_data));
     new_log->inode = new_inode;
     memcpy(new_log->data, new_data, size + grow_size);
 
