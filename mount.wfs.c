@@ -155,15 +155,17 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     new_log->inode = inode;
     // Update the log
     if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) return -ENOSPC;
-    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(new_log));
-    ((struct wfs_sb *)mapped_disk)->head += sizeof(new_log);
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
     
     return 0;
 }
 
 static int wfs_mkdir(const char *path, mode_t mode) {
     // If pathname already exists, or is a symbolic link, fail with EEXIST
-    if (get_number(path) >= 0) return -EEXIST;
+    if (get_inumber(path) >= 0) return -EEXIST;
+    // If mode is not a directory
+    if (!ISDIR(mode)) return -EISNAM;
     
     // Create a new log entry for the directory
     struct wfs_log_entry *new_log;
@@ -183,8 +185,8 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     new_log->inode = inode;
     // Update the log
     if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) return -ENOSPC;
-    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(new_log));
-    ((struct wfs_sb *)mapped_disk)->head += sizeof(new_log);
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
     return 0;
 }
 
@@ -205,7 +207,7 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
 
     // Calculate the maximum number of bytes that can be read
     size_t max_size = inode->size - offset;
-    size_t size = (size < max_size) ? size : max_size;
+    size = (size < max_size) ? size : max_size;
     if (size < 0) return 0;
 
     // Copy data from the log entry to the buffer
@@ -233,19 +235,42 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     }
     if (!S_ISREG(inode->mode)) return -EISDIR;
 
-    // Calculate the maximum number of bytes that can be written
-    off_t file_end = inode->size + inode;
-    if (size + file_end > DISK_SIZE) return -ENOSPC;
+    // Determine if there's enough space for write
+    size_t grow_size = offset + size - inode->size;
+    grow_size = (grow_size > 0) ? grow_size : 0;
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + grow_size > mapped_disk + DISK_SIZE) return -ENOSPC;
 
-    // Copy data from the log entry to the buffer
-    memcpy(((struct wfs_log_entry *)inode)->data + offset, buf, size);
+    // Update inode
+    struct wfs_inode new_inode;
+    new_inode.inode_number = inode->inode_number;
+    new_inode.deleted = inode->deleted;
+    new_inode.mode = inode->mode;
+    new_inode.uid = inode->uid;
+    new_inode.gid = inode->gid;
+    new_inode.flags = inode->flags;
+    new_inode.size = inode->size + grow_size;
+    new_inode.atime = time(NULL);
+    new_inode.mtime = time(NULL);
+    new_inode.mtime = time(NULL);
+    new_inode.links = inode->links;
+    // Update data
+    char *new_data = calloc(1, size + grow_size);
+    memcpy(new_data, ((struct wfs_log_entry *)inode)->data, inode->size);
+    memcpy(new_data + offset, buf, size);
+    // Create a new log entry for the directory
+    struct wfs_log_entry *new_log = calloc(1, sizeof(new_inode) + sizeof(*new_data));
+    new_log->inode = new_inode;
+    memcpy(new_log->data, new_data, size + grow_size);
 
-    // Update inode metadata since file has been accessed
-    inode->atime = time(NULL);
-    inode->mtime = time(NULL);
-    inode->ctime = time(NULL);
+    // Add log to disk
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
 
-    return size;
+    // Free allocated space
+    free(new_data);
+    free(new_log);
+
+    return (grow_size > 0) ? 0 : size;
 }
 
 static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
@@ -267,8 +292,8 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
     struct wfs_dentry *directory = (struct wfs_dentry *)(log->data + offset);
     inode->atime = time(NULL);
     inode->ctime = time(NULL);
-    while (directory < log + sizeof(inode) + inode->size) {
-        filler(buf, directory->name, NULL, directory - mapped_disk);
+    while ((char*)directory < (char*)log->data + inode->size) {
+        filler(buf, directory->name, NULL, (char*)directory + sizeof(struct wfs_dentry) - mapped_disk);
         directory += sizeof(struct wfs_dentry);
     }
 
