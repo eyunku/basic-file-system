@@ -165,7 +165,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     // If pathname already exists, or is a symbolic link, fail with EEXIST
     if (get_inumber(path) >= 0) return -EEXIST;
     // If mode is not a directory
-    if (!ISDIR(mode)) return -EISNAM;
+    if (!S_ISDIR(mode)) return -EISNAM;
     
     // Create a new log entry for the directory
     struct wfs_log_entry *new_log;
