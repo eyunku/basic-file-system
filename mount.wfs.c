@@ -187,86 +187,32 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     return 0;
 }
 
-// OLD
-// static int wfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-//     struct wfs_inode *inode;
-//     if (fi && fi->fh) { // file handle provided
-//         inode = (struct wfs_inode *)fi->fh;
-//         if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
-//             return -EBADF;
-//     } else {
-//         ulong inode_number = get_inumber(path);
-//         if (inode_number == -1) return -ENOENT;
-        
-//         inode = get_inode(inode_number);
-//         if (inode == NULL) return -ENOENT;
-//     }
-//     if (!S_ISREG(inode->mode)) return -EISDIR;
-
-//     // Calculate the maximum number of bytes that can be read
-//     size_t max_size = inode->size - offset;
-//     size = (size < max_size) ? size : max_size;
-//     if (size < 0) return 0;
-
-//     // Copy data from the log entry to the buffer
-//     memcpy(buf, ((struct wfs_log_entry *)inode)->data + offset, size);
-
-//     // Update inode metadata since file has been accessed
-//     inode->atime = time(NULL);
-//     inode->ctime = time(NULL);
-
-//     return size;
-// }
-
-// Read data from a file
 static int wfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    (void) fi; // Unused parameter
-
-    // Find the inode for the given path using the get_inode helper function
-    unsigned long inode_number = get_inumber(path);
-
-    if (inode_number == -1) {
-        return -ENOENT; // Error: File not found
+    struct wfs_inode *inode;
+    if (fi && fi->fh) { // file handle provided
+        inode = (struct wfs_inode *)fi->fh;
+        if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
+            return -EBADF;
+    } else {
+        ulong inode_number = get_inumber(path);
+        if (inode_number == -1) return -ENOENT;
+        
+        inode = get_inode(inode_number);
+        if (inode == NULL) return -ENOENT;
     }
-
-    struct wfs_inode *inode = get_inode(inode_number);
-
-    if (inode == NULL) {
-        return -ENOENT; // Error: Inode not found
-    }
-
-    // Check if the inode is a regular file
-    if (!S_ISREG(inode->mode)) {
-        return -EISDIR; // Error: Not a regular file
-    }
-
-    // Make sure that the read offset is within the file size
-    if (offset >= inode->size) {
-        return 0; // End of file reached
-    }
+    if (!S_ISREG(inode->mode)) return -EISDIR;
 
     // Calculate the maximum number of bytes that can be read
-    size_t max_read_size = inode->size - offset;
-    size = (size < max_read_size) ? size : max_read_size;
-
-    // Find the log entry for the specified inode
-    char *current_position = mapped_disk + sizeof(struct wfs_sb);
-    struct wfs_log_entry *latest_matching_entry;
-    while (current_position < mapped_disk + ((struct wfs_sb *)mapped_disk)->head) {
-        // Convert the current position to a wfs_log_entry pointer
-        struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
-
-        // Check if the current entry has the desired inode number
-        if (S_ISREG(current_entry->inode.mode) && current_entry->inode.inode_number == inode_number && current_entry->inode.deleted == 0) {
-            latest_matching_entry = current_entry;
-        }
-
-        // Move to the next log entry
-        current_position += current_entry->inode.size + sizeof(struct wfs_inode);
-    }
+    size_t max_size = inode->size - offset;
+    size = (size < max_size) ? size : max_size;
+    if (size < 0) return 0;
 
     // Copy data from the log entry to the buffer
-    memcpy(buf, latest_matching_entry->data + offset, size);
+    memcpy(buf, ((struct wfs_log_entry *)inode)->data + offset, size);
+
+    // SEGFAULT Update inode metadata since file has been accessed
+    // inode->atime = time(NULL);
+    // inode->ctime = time(NULL);
 
     return size; // Return the actual number of bytes read
 }
@@ -324,76 +270,29 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     return (grow_size > 0) ? 0 : size;
 }
 
-// OLD 
-// static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-//     struct wfs_inode *inode;
-//     if (fi && fi->fh) { // file handle provided
-//         inode = (struct wfs_inode *)fi->fh;
-//         if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
-//             return -EBADF;
-//     } else {
-//         ulong inode_number = get_inumber(path);
-//         if (inode_number == -1) return -ENOENT;
-        
-//         inode = get_inode(inode_number);
-//         if (inode == NULL) return -ENOENT;
-//     }
-//     if (!S_ISDIR(inode->mode)) return -EISNAM; // Error: Not a directory
-
-//     struct wfs_log_entry *log = (struct wfs_log_entry *)inode;
-//     struct wfs_dentry *directory = (struct wfs_dentry *)(log->data + offset);
-//     inode->atime = time(NULL);
-//     inode->ctime = time(NULL);
-//     while ((char*)directory < (char*)log->data + inode->size) {
-//         filler(buf, directory->name, NULL, (char*)directory + sizeof(struct wfs_dentry) - mapped_disk);
-//         directory += sizeof(struct wfs_dentry);
-//     }
-
-//     return 0;
-// }
-
-// Read directory entries
 static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-    (void) offset; // Unused parameter
-    (void) fi; // Unused parameter
-
-    // Find the inode for the given path using the get_inode helper function
-    unsigned long inode_number = get_inumber(path);
-
-    if (inode_number == -1) {
-        return -ENOENT; // Error: File not found
+    struct wfs_inode *inode;
+    if (fi && fi->fh) { // file handle provided
+        inode = (struct wfs_inode *)fi->fh;
+        if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
+            return -EBADF;
+    } else {
+        ulong inode_number = get_inumber(path);
+        if (inode_number == -1) return -ENOENT;
+        
+        inode = get_inode(inode_number);
+        if (inode == NULL) return -ENOENT;
     }
-
-    struct wfs_inode *inode = get_inode(inode_number);
-
-    if (inode == NULL) {
-        return -ENOENT; // Error: Inode not found
-    }
-
-    // Check if the inode is a directory
-    if (!S_ISDIR(inode->mode)) {
-        return -ENOTDIR; // Error: Not a directory
-    }
-    // Find the log entry for the specified inode
-    char *current_position = mapped_disk + sizeof(struct wfs_sb);
-    struct wfs_log_entry *latest_matching_entry;
-    while (current_position < mapped_disk + ((struct wfs_sb *)mapped_disk)->head) {
-        // Convert the current position to a wfs_log_entry pointer
-        struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
-
-        // Check if the current entry has the desired inode number
-        if (S_ISDIR(current_entry->inode.mode) && current_entry->inode.inode_number == inode_number && current_entry->inode.deleted == 0) {
-            latest_matching_entry = current_entry;
-        }
-
-        // Move to the next log entry
-        current_position += current_entry->inode.size + sizeof(struct wfs_inode);
-    }
-
+    if (!S_ISDIR(inode->mode)) return -EISNAM; // Error: Not a directory
+    
     // Look through the directory entries to find the filenames
-    struct wfs_dentry *dir_entry = (struct wfs_dentry *)latest_matching_entry->data;
+    struct wfs_log_entry *log = (struct wfs_log_entry *)inode;
+    struct wfs_dentry *dir_entry = (struct wfs_dentry *)(log->data + offset);
     int directory_offset = 0;
-    while (directory_offset < latest_matching_entry->inode.size) {
+    // SEGFAULT
+    // inode->atime = time(NULL);
+    // inode->ctime = time(NULL);
+    while (directory_offset < inode->size) {
         // Use the filler function to provide directory entries to FUSE
         filler(buf, dir_entry->name, NULL, 0);
         // Move to the next directory entry
