@@ -210,9 +210,10 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
     // Copy data from the log entry to the buffer
     memcpy(buf, ((struct wfs_log_entry *)inode)->data + offset, size);
 
-    // SEGFAULT Update inode metadata since file has been accessed
-    // inode->atime = time(NULL);
-    // inode->ctime = time(NULL);
+    // Update inode metadata since file has been accessed
+    uint current_time = time(NULL);
+    memcpy(&(inode->atime), &(current_time), sizeof(current_time));
+    memcpy(&(inode->ctime), &(current_time), sizeof(current_time));
 
     return size; // Return the actual number of bytes read
 }
@@ -289,9 +290,9 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
     struct wfs_log_entry *log = (struct wfs_log_entry *)inode;
     struct wfs_dentry *dir_entry = (struct wfs_dentry *)(log->data + offset);
     int directory_offset = 0;
-    // SEGFAULT
-    // inode->atime = time(NULL);
-    // inode->ctime = time(NULL);
+    uint current_time = time(NULL);
+    memcpy(&(inode->atime), &(current_time), sizeof(current_time));
+    memcpy(&(inode->ctime), &(current_time), sizeof(current_time));
     while (directory_offset < inode->size) {
         // Use the filler function to provide directory entries to FUSE
         filler(buf, dir_entry->name, NULL, 0);
