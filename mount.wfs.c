@@ -211,7 +211,11 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
     // Copy data from the log entry to the buffer
     memcpy(buf, ((struct wfs_log_entry *)inode)->data + offset, size);
 
-    return size; // Return the actual number of bytes read
+    // Update inode metadata since file has been accessed
+    inode->atime = time(NULL);
+    inode->ctime = time(NULL);
+
+    return size;
 }
 
 static int wfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
@@ -229,15 +233,17 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     }
     if (!S_ISREG(inode->mode)) return -EISDIR;
 
-    // Calculate the maximum number of bytes that can be read
-    size_t max_size = inode->size - offset;
-    size_t size = (size < max_size) ? size : max_size;
-    if (size < 0) return 0;
+    // Calculate the maximum number of bytes that can be written
+    off_t file_end = inode->size + inode;
+    if (size + file_end > DISK_SIZE) return -ENOSPC;
 
     // Copy data from the log entry to the buffer
     memcpy(((struct wfs_log_entry *)inode)->data + offset, buf, size);
 
-    return size; // Return the actual number of bytes read
+    // Update inode metadata since file has been accessed
+    inode->atime = time(NULL);
+    inode->mtime = time(NULL);
+    inode->ctime = time(NULL);
 
     return size;
 }
@@ -259,6 +265,8 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
 
     struct wfs_log_entry *log = (struct wfs_log_entry *)inode;
     struct wfs_dentry *directory = (struct wfs_dentry *)(log->data + offset);
+    inode->atime = time(NULL);
+    inode->ctime = time(NULL);
     while (directory < log + sizeof(inode) + inode->size) {
         filler(buf, directory->name, NULL, directory - mapped_disk);
         directory += sizeof(struct wfs_dentry);
