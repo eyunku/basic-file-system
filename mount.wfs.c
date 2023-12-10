@@ -21,6 +21,7 @@ static ulong get_largest_inumber() {
         struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
         if (current_entry->inode.inode_number > max_inode_number)
             max_inode_number = current_entry->inode.inode_number;
+        current_entry += (sizeof(struct wfs_inode) + current_entry->inode.size);
     }
 
     return max_inode_number;

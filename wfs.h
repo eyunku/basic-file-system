@@ -14,7 +14,7 @@
 
 #define MAX_FILE_NAME_LEN 32
 #define WFS_MAGIC 0xdeadbeef
-#define DISK_SIZE 0xffffffff
+#define DISK_SIZE 0x000fffff
 
 struct wfs_sb {
     uint32_t magic;
