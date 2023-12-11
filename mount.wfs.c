@@ -9,7 +9,7 @@ static char *mapped_disk = NULL; // address of disk
 
 /**
  * Given a path, gets the basename (name of the file or directory), and the path to the
- * parent directory.
+ * parent directory. Passing NULL into basename or dirname means that buffer will be ignored.
  * 
  * Parameters:
  *  basename (char*): buffer to store the name of file or directory.
@@ -26,11 +26,15 @@ int parsepath(char* basename, char* dirname, const char* path) {
     while (1) {
         char *nexttok = strtok(NULL, "/");
         if (nexttok == NULL) {
-            if (strcpy(basename, token) == NULL) return -1;
+            if (basename != NULL) {
+                if (strcpy(basename, token) == NULL) return -1;
+            }
             break;
         }
-        if (strcpy(dirname, token) == NULL) return -1;
-        if (strcat(dirname, "/") == NULL) return -1;
+        if (dirname != NULL) {
+            if (strcpy(dirname, token) == NULL) return -1;
+            if (strcat(dirname, "/") == NULL) return -1;
+        }
         if (strcpy(token, nexttok) == NULL) return -1;
     }
     return 0;
@@ -57,67 +61,6 @@ static ulong get_largest_inumber() {
 }
 
 /**
- * Get the inode number from a given path. Iterates over disk space.
- * 
- * Parameters:
- *  path (const char*): the path, represented as a string.
- * 
- * Returns:
- *  ulong: the inode number associated with the path.
-*/
-static ulong get_inumber(const char *path) {
-    // Start with the root inode number
-    ulong current_inode_number = 0;
-
-    // Make a copy of the path since strtok modifies the string
-    char path_copy[strlen(path) + 1];
-    strcpy(path_copy, path);
-
-    // Tokenize the path using '/'
-    char *token = strtok(path_copy, "/");
-    int found = 1; // This will be reset to 0 unless it is the root directory.
-    while (token != NULL) {
-        found = 0;
-        // Iterate through the log entries until we reach the head
-        char *current_position = mapped_disk + sizeof(struct wfs_sb);
-        struct wfs_log_entry *latest_matching_entry;
-        while (current_position < mapped_disk + ((struct wfs_sb *)mapped_disk)->head) {
-            // Convert the current position to a wfs_log_entry pointer
-            struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
-
-            // Check if the current entry has the desired inode number
-            if (S_ISDIR(current_entry->inode.mode) && current_entry->inode.inode_number == current_inode_number && current_entry->inode.deleted == 0) {
-                latest_matching_entry = current_entry;
-            }
-
-            // Move to the next log entry
-            current_position += current_entry->inode.size + sizeof(struct wfs_inode);
-        }
-        // Found the inode, return a pointer to it
-        struct wfs_dentry *dir_entry = (struct wfs_dentry *)latest_matching_entry->data;
-        int directory_offset = 0;
-        while (directory_offset < latest_matching_entry->inode.size) {
-            if (!strcmp(dir_entry->name, token)) {
-                found = 1;
-                current_inode_number = dir_entry->inode_number;
-                break;
-            }
-            // Move to the next directory entry
-            directory_offset += sizeof(struct wfs_dentry);  // Corrected line
-            dir_entry++;  // Corrected line
-        }
-        // Get the next token
-        token = strtok(NULL, "/");
-
-    }
-    if(!found) {
-        return -1;
-    }
-
-    return current_inode_number;
-}
-
-/**
  * Get the live inode associated with the given inode number.
  * 
  * Parameters:
@@ -126,7 +69,7 @@ static ulong get_inumber(const char *path) {
  * Returns:
  *  wfs_inode*: pointer to inode structure associated with inode number.
 */
-static struct wfs_inode *get_inode(uint inode_number) {
+static struct wfs_inode *read_inumber(uint inode_number) {
     char *current_position = mapped_disk + sizeof(struct wfs_sb);
     struct wfs_inode *latest_matching_entry = NULL;
     
@@ -140,11 +83,61 @@ static struct wfs_inode *get_inode(uint inode_number) {
     return latest_matching_entry;
 }
 
-static int wfs_getattr(const char *path, struct stat *stbuf) {
-    ulong inode_number = get_inumber(path);
-    if (inode_number == -1) return -ENOENT; // Error: File not found
+/**
+ * Get the live inode associated with a given path. Iterates over disk space.
+ * 
+ * Parameters:
+ *  path (const char*): the path, represented as a string.
+ * 
+ * Returns:
+ *  wfs_inode*: pointer to inode structure associated with path.
+*/
+static struct wfs_inode *read_path(const char *path) {
+    // Find root directory by inode number
+    struct wfs_log_entry *root = read_inumber(0);
 
-    struct wfs_inode *inode = get_inode(inode_number);
+    // Iterate through filesystem while matching token
+    char path_c[MAX_PATH_LEN];
+    strcpy(path_c, path);
+    char *token = strtok(path_c, "/");
+    struct wfs_log_entry *current_log = root;
+    // Iterate through each part of the path
+    while (token != NULL) {
+        char *nexttok = strtok(NULL, "/");
+
+        // Iterate through the directory, one directory entry at a time
+        int found = 0;
+        struct wfs_dentry *current_dentry = (struct wfs_dentry*)current_log->data;
+        while ((char*)current_dentry < (char*)current_log->data + current_log->inode.size) {
+            if (!strcmp(token, current_dentry->name)) { // found matching token
+                found = 1;
+                // Search disk for next log entry to read
+                ulong inode_number = current_dentry->inode_number;
+                struct wfs_inode *current_inode = read_inumber(inode_number);
+                current_log = (struct wfs_log_entry *)current_inode;
+                
+                if (S_ISDIR(current_inode->mode)) {
+                    if (nexttok == NULL) // is directory but path is ended
+                        return NULL;
+                    break;
+                } else if (S_ISREG(current_inode->mode)) {
+                    if (nexttok != NULL) // is regular file but path has more data
+                        continue; // keep searching for directory of correct name
+                    return current_inode;
+                }
+            }
+            current_dentry += sizeof(struct wfs_dentry);
+        }
+        // If found, log has been updated to subsequent directory, otherwise, failed to find
+        if (!found) return NULL;
+        strcpy(token, nexttok);
+    }
+
+    return NULL;
+}
+
+static int wfs_getattr(const char *path, struct stat *stbuf) {
+    struct wfs_inode *inode = read_path(path);
     if (inode == NULL) return -ENOENT; // Error: Inode not found
 
     // Fill in the struct stat with information from the inode
@@ -161,10 +154,10 @@ static int wfs_getattr(const char *path, struct stat *stbuf) {
 
 static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     // If pathname already exists, or is a symbolic link, fail with EEXIST
-    if (get_inumber(path) >= 0) return -EEXIST;
+    if (read_path(path) != NULL) return -EEXIST;
 
     // Create a new log entry for the file
-    struct wfs_log_entry *new_log;
+    struct wfs_log_entry *new_log = malloc(sizeof(struct wfs_inode));
     // Set the mode and other attributes based on the provided arguments
     struct wfs_inode inode;
     inode.inode_number = get_largest_inumber() + 1;
@@ -183,18 +176,20 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
+
+    free(new_log);
     
     return 0;
 }
 
 static int wfs_mkdir(const char *path, mode_t mode) {
     // If pathname already exists, or is a symbolic link, fail with EEXIST
-    if (get_inumber(path) >= 0) return -EEXIST;
+    if (read_path(path) != NULL) return -EEXIST;
     // If mode is not a directory
     if (!S_ISDIR(mode)) return -EISNAM;
     
     // Create a new log entry for the directory
-    struct wfs_log_entry *new_log;
+    struct wfs_log_entry *new_log = malloc(sizeof(struct wfs_inode));
     // Set the mode and other attributes based on the provided arguments
     struct wfs_inode inode;
     inode.inode_number = get_largest_inumber() + 1;
@@ -222,9 +217,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     memcpy(new_dentry->name, name, sizeof(name));
     new_dentry->inode_number = inode.inode_number;
     // Get existing parent inode
-    ulong parent_inode_number = get_inumber(parent_path);
-    if (parent_inode_number == -1) return -ENOENT; 
-    struct wfs_inode *parent_inode = get_inode(parent_inode_number);
+    struct wfs_inode *parent_inode = read_path(parent_path);
     if (parent_inode == NULL) return -ENOENT;
     struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode;
     // Create new inode entry for parent
@@ -254,6 +247,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_parent_log);
 
     // Free allocated space
+    free(new_log);
     free(data);
     free(new_parent_log);
 
@@ -267,10 +261,7 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
         if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
             return -EBADF;
     } else {
-        ulong inode_number = get_inumber(path);
-        if (inode_number == -1) return -ENOENT;
-        
-        inode = get_inode(inode_number);
+        inode = read_path(path);
         if (inode == NULL) return -ENOENT;
     }
     if (!S_ISREG(inode->mode)) return -EISDIR;
@@ -298,10 +289,7 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
         if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
             return -EBADF;
     } else {
-        ulong inode_number = get_inumber(path);
-        if (inode_number == -1) return -ENOENT;
-        
-        inode = get_inode(inode_number);
+        inode = read_path(path);
         if (inode == NULL) return -ENOENT;
     }
     if (!S_ISREG(inode->mode)) return -EISDIR;
@@ -351,10 +339,7 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
         if (inode == NULL || inode->inode_number < 0 || inode->inode_number > get_largest_inumber())
             return -EBADF;
     } else {
-        ulong inode_number = get_inumber(path);
-        if (inode_number == -1) return -ENOENT;
-        
-        inode = get_inode(inode_number);
+        inode = read_path(path);
         if (inode == NULL) return -ENOENT;
     }
     if (!S_ISDIR(inode->mode)) return -EISNAM; // Error: Not a directory
@@ -377,64 +362,60 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
 }
 
 static int wfs_unlink(const char *path) {
-    // Use the path to find the corresponding entry in the log
-    ulong inode_number = get_inumber(path);
-    if (inode_number == -1) return -ENOENT; // Error: File not found
+    // struct wfs_inode *inode = read_path(path);
+    // if (inode == NULL) return -ENOENT;
 
-    struct wfs_inode *inode = get_inode(inode_number);
-    if (inode == NULL) return -ENOENT;
-
-    // Mark the entry as deleted in the log
-    struct wfs_log_entry *unlink_log;
-    unlink_log = malloc(sizeof(struct wfs_inode));
-    unlink_log->inode = *inode;
-    unlink_log->inode.deleted = 1;
-    unlink_log->inode.size = 0; // No need to copy old data into new deleted log entry
+    // // Mark the entry as deleted in the log
+    // struct wfs_log_entry *unlink_log;
+    // unlink_log = malloc(sizeof(struct wfs_inode));
+    // unlink_log->inode = *inode;
+    // unlink_log->inode.deleted = 1;
+    // unlink_log->inode.size = 0; // No need to copy old data into new deleted log entry
 
 
-    // Update the log
-    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) {
-        free(unlink_log);
-        return -ENOSPC;
-    }
+    // // Update the log
+    // if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) {
+    //     free(unlink_log);
+    //     return -ENOSPC;
+    // }
 
-    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, unlink_log, sizeof(struct wfs_inode));
-    ((struct wfs_sb *)mapped_disk)->head += sizeof(struct wfs_inode);
+    // memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, unlink_log, sizeof(struct wfs_inode));
+    // ((struct wfs_sb *)mapped_disk)->head += sizeof(struct wfs_inode);
 
-    free(unlink_log);
+    // free(unlink_log);
 
-    char *path_copy = strdup(path);
-    char base_name[MAX_FILE_NAME_LEN]; char dir_name[MAX_PATH_LEN];
-    parsepath(base_name, dir_name, path_copy);
-    free(path_copy);
+    // char *path_copy = strdup(path);
+    // char base_name[MAX_FILE_NAME_LEN]; char dir_name[MAX_PATH_LEN];
+    // parsepath(base_name, dir_name, path_copy);
+    // free(path_copy);
 
-    ulong parent_inode_number = get_inumber(dir_name);
-    if (parent_inode_number == -1) return -ENOENT; // Error: Parent directory not found
+    // ulong parent_inode_number = get_inumber(dir_name);
+    // if (parent_inode_number == -1) return -ENOENT; // Error: Parent directory not found
 
   
-    struct wfs_log_entry *parent_log_entry = (struct wfs_log_entry *)get_inode(parent_inode_number);
-    struct wfs_dentry *parent_dir_entry = (struct wfs_dentry *)parent_log_entry->data;
+    // struct wfs_log_entry *parent_log_entry = (struct wfs_log_entry *)get_inode(parent_inode_number);
+    // struct wfs_dentry *parent_dir_entry = (struct wfs_dentry *)parent_log_entry->data;
     
-    // Make a log entry for the new parent
-    struct wfs_log_entry *new_parent_log_entry;
-    new_parent_log_entry = malloc(sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry));
-    new_parent_log_entry->inode = parent_log_entry->inode;
-    new_parent_log_entry->inode.size = parent_log_entry->inode.size - sizeof(struct wfs_dentry);
-    int directory_offset = 0;
-    while (directory_offset < parent_log_entry->inode.size) {
-        // Copy over all entries except the deleted one
-        if (!strcmp(parent_dir_entry->name, base_name)) {
-            memcpy(new_parent_log_entry->data, parent_dir_entry, sizeof(struct wfs_dentry));
-        }
-        directory_offset += sizeof(struct wfs_dentry);
-        parent_dir_entry++;
-    }
+    // // Make a log entry for the new parent
+    // struct wfs_log_entry *new_parent_log_entry;
+    // new_parent_log_entry = malloc(sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry));
+    // new_parent_log_entry->inode = parent_log_entry->inode;
+    // new_parent_log_entry->inode.size = parent_log_entry->inode.size - sizeof(struct wfs_dentry);
+    // int directory_offset = 0;
+    // while (directory_offset < parent_log_entry->inode.size) {
+    //     // Copy over all entries except the deleted one
+    //     if (!strcmp(parent_dir_entry->name, base_name)) {
+    //         memcpy(new_parent_log_entry->data, parent_dir_entry, sizeof(struct wfs_dentry));
+    //     }
+    //     directory_offset += sizeof(struct wfs_dentry);
+    //     parent_dir_entry++;
+    // }
 
-    // Write the new parent to disk
-    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log_entry, sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry));
-    ((struct wfs_sb *)mapped_disk)->head += sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry);
+    // // Write the new parent to disk
+    // memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log_entry, sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry));
+    // ((struct wfs_sb *)mapped_disk)->head += sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry);
 
-    free(new_parent_log_entry);
+    // free(new_parent_log_entry);
 
     return 0;
 }
