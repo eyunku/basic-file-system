@@ -132,8 +132,9 @@ static struct wfs_inode *read_path(const char *path) {
         if (!found) return NULL;
         strcpy(token, nexttok);
     }
-
-    return NULL;
+    
+    // Edge case, skip while loop because next token is immediately null
+    return (struct wfs_inode *)root;
 }
 
 static int wfs_getattr(const char *path, struct stat *stbuf) {
