@@ -22,3 +22,4 @@ fsck.wfs:
 .PHONY: clean
 clean:
 	rm -rf $(NAME)
+	rm -f disk

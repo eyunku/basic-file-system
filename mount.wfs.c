@@ -54,7 +54,7 @@ static ulong get_largest_inumber() {
         struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
         if (current_entry->inode.inode_number > max_inode_number)
             max_inode_number = current_entry->inode.inode_number;
-        current_entry += (sizeof(struct wfs_inode) + current_entry->inode.size);
+        current_position += (sizeof(struct wfs_inode) + current_entry->inode.size);
     }
 
     return max_inode_number;
@@ -93,48 +93,40 @@ static struct wfs_inode *read_inumber(uint inode_number) {
  *  wfs_inode*: pointer to inode structure associated with path.
 */
 static struct wfs_inode *read_path(const char *path) {
-    // Find root directory by inode number
-    struct wfs_log_entry *root = (struct wfs_log_entry *)read_inumber(0);
+    // Start with the root inode number
+    ulong current_inode_number = 0;
 
-    // Iterate through filesystem while matching token
-    char path_c[MAX_PATH_LEN];
-    strcpy(path_c, path);
-    char *token = strtok(path_c, "/");
-    struct wfs_log_entry *current_log = root;
-    // Iterate through each part of the path
+    // Make a copy of the path since strtok modifies the string
+    char path_copy[strlen(path) + 1];
+    strcpy(path_copy, path);
+
+    // Tokenize the path using '/'
+    char *token = strtok(path_copy, "/");
+    int found = 1; // This will be reset to 0 unless it is the root directory.
     while (token != NULL) {
-        char *nexttok = strtok(NULL, "/");
-
-        // Iterate through the directory, one directory entry at a time
-        int found = 0;
-        struct wfs_dentry *current_dentry = (struct wfs_dentry*)current_log->data;
-        while ((char*)current_dentry < (char*)current_log->data + current_log->inode.size) {
-            if (!strcmp(token, current_dentry->name)) { // found matching token
+        found = 0;
+        struct wfs_log_entry *latest_matching_entry = (struct wfs_log_entry *)read_inumber(current_inode_number);
+        if(!S_ISDIR(latest_matching_entry->inode.mode)) return NULL;
+        // Found the inode, return a pointer to it
+        struct wfs_dentry *dir_entry = (struct wfs_dentry *)latest_matching_entry->data;
+        int directory_offset = 0;
+        while (directory_offset < latest_matching_entry->inode.size) {
+            if (!strcmp(dir_entry->name, token)) {
                 found = 1;
-                // Search disk for next log entry to read
-                ulong inode_number = current_dentry->inode_number;
-                struct wfs_inode *current_inode = read_inumber(inode_number);
-                current_log = (struct wfs_log_entry *)current_inode;
-                
-                if (S_ISDIR(current_inode->mode)) {
-                    if (nexttok == NULL) // is directory but path is ended
-                        return NULL;
-                    break;
-                } else if (S_ISREG(current_inode->mode)) {
-                    if (nexttok != NULL) // is regular file but path has more data
-                        continue; // keep searching for directory of correct name
-                    return current_inode;
-                }
+                current_inode_number = dir_entry->inode_number;
+                break;
             }
-            current_dentry++;
+            // Move to the next directory entry
+            directory_offset += sizeof(struct wfs_dentry); // Corrected line
+            dir_entry++; // Corrected line
         }
-        // If found, log has been updated to subsequent directory, otherwise, failed to find
-        if (!found) return NULL;
-        strcpy(token, nexttok);
+        // Get the next token
+        token = strtok(NULL, "/");
     }
-    
-    // Edge case, skip while loop because next token is immediately null
-    return (struct wfs_inode *)root;
+    if(!found)
+        return NULL;
+
+    return read_inumber(current_inode_number);
 }
 
 static int wfs_getattr(const char *path, struct stat *stbuf) {
@@ -184,7 +176,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
 }
 
 static int wfs_mkdir(const char *path, mode_t mode) {
-    printf("mkdir called\n");
+    printf("mkdir called with path: %s\n", path);
     // If pathname already exists, or is a symbolic link, fail with EEXIST
     if (read_path(path) != NULL) return -EEXIST;
     // // If mode is not a directory
@@ -214,17 +206,21 @@ static int wfs_mkdir(const char *path, mode_t mode) {
 
     printf("updating parent\n");
     // Update parent
-    char name[MAX_FILE_NAME_LEN]; char parent_path[MAX_PATH_LEN];
-    printf("parsing path\n");
+    char name[MAX_FILE_NAME_LEN] = {0};
+    char parent_path[MAX_PATH_LEN] = {0};
+    printf("parsing path %s\n", path);
     parsepath(name, parent_path, path);
+    printf("path parsed to be name: %s, parent path: %s\n", name, parent_path);
     // Create directory entry for new directory
-    struct wfs_dentry *new_dentry = malloc(sizeof(name) + sizeof(ulong));
-    memcpy(new_dentry->name, name, sizeof(name));
+    struct wfs_dentry *new_dentry = malloc(sizeof(struct wfs_dentry));
+    strcpy(new_dentry->name, name);
     new_dentry->inode_number = inode.inode_number;
+    printf("inode number: %ld, name: %s\n", new_dentry->inode_number, new_dentry->name);
     // Get existing parent inode
-    printf("reading path\n");
+    printf("reading path %s\n", parent_path);
     struct wfs_inode *parent_inode = read_path(parent_path);
     if (parent_inode == NULL) return -ENOENT;
+    printf("parsepath successful\n");
     struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode;
     // Create new inode entry for parent
     struct wfs_inode new_parent_inode;
@@ -239,15 +235,28 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     new_parent_inode.mtime = time(NULL);
     new_parent_inode.ctime = time(NULL);
     new_parent_inode.links = parent_log->inode.links;
+    printf("parent inode initialized\n");
     // Update data
     char *data = malloc(new_parent_inode.size);
     memcpy(data, parent_log->data, parent_log->inode.size);
     memcpy(data + parent_log->inode.size, new_dentry, sizeof(*new_dentry));
+    for (struct wfs_dentry *d = (struct wfs_dentry *)data; d < (struct wfs_dentry *)data + new_parent_inode.size; d+=sizeof(struct wfs_dentry)) {
+        printf("current entry name: %s, number %ld\n", d->name, d->inode_number);
+    }
+    printf("data updated\n");
     // Create new log entry for parent
     struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + sizeof(*data));
     new_parent_log->inode = new_parent_inode;
     memcpy(new_parent_log->data, data, sizeof(*data));
+    printf("new parent log inode: %d\n", new_parent_log->inode.inode_number);
+    for (struct wfs_dentry *d = (struct wfs_dentry *)new_parent_log->data; d < (struct wfs_dentry *)new_parent_log->data + new_parent_inode.size; d+=sizeof(struct wfs_dentry)) {
+        printf("current entry name: %s, number %ld\n", d->name, d->inode_number);
+    }
+    printf("new log entry copied\n");
     // Update the log
+    printf("attempting to copy to disk\n");
+    printf("mapped disk location %p\n", mapped_disk);
+    printf("current head: %p, new head: %p, max head: %p\n", mapped_disk + ((struct wfs_sb *)mapped_disk)->head, mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log), mapped_disk + DISK_SIZE);
     if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log, sizeof(*new_parent_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_parent_log);
@@ -257,6 +266,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     free(data);
     free(new_parent_log);
 
+    printf("mkdir finished successfully??\n");
     return 0;
 }
 
@@ -437,6 +447,12 @@ static struct fuse_operations wfs_ops = {
 };
 
 int main(int argc, char *argv[]) {
+    // printf("running test on parsepath\n");
+    // char name[100]; char parent_path[100];
+    // char test_path[11] = "/a";
+    // parsepath(name, parent_path, test_path);
+    // printf("parses to name: %s, parent path: %s\n", name, parent_path);
+
     if (argc < 3 || argv[argc - 2][0] == '-' || argv[argc - 1][0] == '-') {
         fprintf(stderr, "Usage: %s [FUSE options] disk_path mount_point\n", argv[0]);
         exit(EXIT_FAILURE);

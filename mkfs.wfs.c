@@ -4,7 +4,7 @@
 
 static int init_filesystem(const char *path) {
     // Open the file for read-write, create if not exists, truncate to zero length
-    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int fd = open(path, O_RDWR, 0644);
     if (fd == -1) {
         perror("Error opening file");
         return -1;
