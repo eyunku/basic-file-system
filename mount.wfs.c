@@ -3,10 +3,38 @@
 #include <fuse.h>
 #include <errno.h>
 #include <sys/mman.h>
-#include <libgen.h>
 
 static const char *disk_path = NULL; // absolute path to disk
 static char *mapped_disk = NULL; // address of disk
+
+/**
+ * Given a path, gets the basename (name of the file or directory), and the path to the
+ * parent directory.
+ * 
+ * Parameters:
+ *  basename (char*): buffer to store the name of file or directory.
+ *  dirname (char*): buffer to store path to parent directory.
+ *  path (const char*): absolute path to the file or directory.
+ * 
+ * Returns:
+ *  int: 0 on success, -1 on failure.
+*/
+int parsepath(char* basename, char* dirname, const char* path) {
+    char path_copy[strlen(path) + 1];
+    strcpy(path_copy, path);
+    char *token = strtok(path_copy, "/");
+    while (1) {
+        char *nexttok = strtok(NULL, "/");
+        if (nexttok == NULL) {
+            if (strcpy(basename, token) == NULL) return -1;
+            break;
+        }
+        if (strcpy(dirname, token) == NULL) return -1;
+        if (strcat(dirname, "/") == NULL) return -1;
+        if (strcpy(token, nexttok) == NULL) return -1;
+    }
+    return 0;
+}
 
 /**
  * Finds the largest inode number in the disk.
@@ -187,19 +215,18 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
 
     // Update parent
-    char *name = basename(path);
-    char *parent = dirname(path);
+    char name[MAX_FILE_NAME_LEN]; char parent_path[MAX_PATH_LEN];
+    parsepath(name, parent_path, path);
     // Create directory entry for new directory
-    struct wfs_dentry new_dentry = {
-        .name = name,
-        .inode_number = inode.inode_number,
-    };
+    struct wfs_dentry *new_dentry = malloc(sizeof(name) + sizeof(ulong));
+    memcpy(new_dentry->name, name, sizeof(name));
+    new_dentry->inode_number = inode.inode_number;
     // Get existing parent inode
-    ulong parent_inode_number = get_inumber(path);
+    ulong parent_inode_number = get_inumber(parent_path);
     if (parent_inode_number == -1) return -ENOENT; 
     struct wfs_inode *parent_inode = get_inode(parent_inode_number);
-    if (parent_inode_number == NULL) return -ENOENT;
-    struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode_number;
+    if (parent_inode == NULL) return -ENOENT;
+    struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode;
     // Create new inode entry for parent
     struct wfs_inode new_parent_inode;
     new_parent_inode.inode_number = parent_log->inode.inode_number;
@@ -208,7 +235,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     new_parent_inode.uid = parent_log->inode.uid;
     new_parent_inode.gid = parent_log->inode.gid;
     new_parent_inode.flags = parent_log->inode.flags;
-    new_parent_inode.size = parent_log->inode.size + sizeof(new_dentry);
+    new_parent_inode.size = parent_log->inode.size + sizeof(*new_dentry);
     new_parent_inode.atime = time(NULL);
     new_parent_inode.mtime = time(NULL);
     new_parent_inode.ctime = time(NULL);
@@ -216,7 +243,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     // Update data
     char *data = malloc(new_parent_inode.size);
     memcpy(data, parent_log->data, parent_log->inode.size);
-    memcpy(data + parent_log->inode.size, &new_dentry, sizeof(new_dentry));
+    memcpy(data + parent_log->inode.size, new_dentry, sizeof(*new_dentry));
     // Create new log entry for parent
     struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + sizeof(*data));
     new_parent_log->inode = new_parent_inode;
@@ -377,8 +404,8 @@ static int wfs_unlink(const char *path) {
     free(unlink_log);
 
     char *path_copy = strdup(path);
-    char *dir_name = dirname(path_copy);
-    char *base_name = basename(path_copy);
+    char base_name[MAX_FILE_NAME_LEN]; char dir_name[MAX_PATH_LEN];
+    parsepath(base_name, dir_name, path_copy);
     free(path_copy);
 
     ulong parent_inode_number = get_inumber(dir_name);
@@ -432,7 +459,7 @@ int main(int argc, char *argv[]) {
     disk_path = realpath(argv[argc - 2], NULL);
 
     // Open the disk file
-    int fd = open(disk_path, O_RDONLY);
+    int fd = open(disk_path, O_RDWR);
     if (fd == -1) {
         perror("Error opening file");
         exit(EXIT_FAILURE);
@@ -446,7 +473,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    mapped_disk = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    mapped_disk = mmap(NULL, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (mapped_disk == MAP_FAILED) {
         perror("Error mapping file into memory");
         close(fd);
