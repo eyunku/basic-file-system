@@ -13,6 +13,7 @@
 #include <sys/types.h>
 
 #define MAX_FILE_NAME_LEN 32
+#define MAX_PATH_LEN 100
 #define WFS_MAGIC 0xdeadbeef
 #define DISK_SIZE 0x000fffff
 
