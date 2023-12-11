@@ -23,7 +23,7 @@ int parsepath(char* basename, char* dirname, const char* path) {
     char path_copy[strlen(path) + 1];
     strcpy(path_copy, path);
     char *token = strtok(path_copy, "/");
-    while (1) {
+    while (token != NULL) {
         char *nexttok = strtok(NULL, "/");
         if (nexttok == NULL) {
             if (basename != NULL) {
@@ -32,10 +32,10 @@ int parsepath(char* basename, char* dirname, const char* path) {
             break;
         }
         if (dirname != NULL) {
-            if (strcpy(dirname, token) == NULL) return -1;
+            if (strcat(dirname, token) == NULL) return -1;
             if (strcat(dirname, "/") == NULL) return -1;
         }
-        if (strcpy(token, nexttok) == NULL) return -1;
+        token = nexttok;
     }
     return 0;
 }
@@ -126,7 +126,7 @@ static struct wfs_inode *read_path(const char *path) {
                     return current_inode;
                 }
             }
-            current_dentry += sizeof(struct wfs_dentry);
+            current_dentry++;
         }
         // If found, log has been updated to subsequent directory, otherwise, failed to find
         if (!found) return NULL;
@@ -184,11 +184,13 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
 }
 
 static int wfs_mkdir(const char *path, mode_t mode) {
+    printf("mkdir called\n");
     // If pathname already exists, or is a symbolic link, fail with EEXIST
     if (read_path(path) != NULL) return -EEXIST;
-    // If mode is not a directory
-    if (!S_ISDIR(mode)) return -EISNAM;
-    
+    // // If mode is not a directory
+    // if (!S_ISDIR(mode)) return -EISNAM;
+
+    printf("creating new log\n");
     // Create a new log entry for the directory
     struct wfs_log_entry *new_log = malloc(sizeof(struct wfs_inode));
     // Set the mode and other attributes based on the provided arguments
@@ -210,14 +212,17 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
 
+    printf("updating parent\n");
     // Update parent
     char name[MAX_FILE_NAME_LEN]; char parent_path[MAX_PATH_LEN];
+    printf("parsing path\n");
     parsepath(name, parent_path, path);
     // Create directory entry for new directory
     struct wfs_dentry *new_dentry = malloc(sizeof(name) + sizeof(ulong));
     memcpy(new_dentry->name, name, sizeof(name));
     new_dentry->inode_number = inode.inode_number;
     // Get existing parent inode
+    printf("reading path\n");
     struct wfs_inode *parent_inode = read_path(parent_path);
     if (parent_inode == NULL) return -ENOENT;
     struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode;
