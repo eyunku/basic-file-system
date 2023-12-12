@@ -365,26 +365,37 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     new_inode.size = inode->size + grow_size;
     new_inode.atime = time(NULL);
     new_inode.mtime = time(NULL);
-    new_inode.mtime = time(NULL);
+    new_inode.ctime = time(NULL);
     new_inode.links = inode->links;
-    // Update data
-    char *new_data = malloc(size + grow_size);
-    memcpy(new_data, ((struct wfs_log_entry *)inode)->data, inode->size);
-    memcpy(new_data + offset, buf, size);
-    // Create a new log entry for the directory
-    struct wfs_log_entry *new_log = malloc(sizeof(new_inode) + sizeof(*new_data));
-    new_log->inode = new_inode;
-    memcpy(new_log->data, new_data, size + grow_size);
 
-    // Add log to disk
-    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
-    ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
+    // Update data
+    char *new_data = malloc(new_inode.size);
+    if (!new_data) return -ENOMEM;
+
+    // Copy existing data to the new buffer
+    memcpy(new_data, ((struct wfs_log_entry *)inode)->data, inode->size);
+
+    // Copy the new data to the appropriate offset
+    memcpy(new_data + offset, buf, size);
+
+    // Create a new log entry for the updated file
+    struct wfs_log_entry *new_log = malloc(sizeof(new_inode) + new_inode.size);
+    new_log->inode = new_inode;
+    memcpy(new_log->data, new_data, new_inode.size);
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_log) + new_inode.size> mapped_disk + DISK_SIZE) {
+        free(new_data);
+        free(new_log);
+        return -ENOSPC;
+    }
+
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log) + new_inode.size);
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log) + new_inode.size;
 
     // Free allocated space
     free(new_data);
     free(new_log);
 
-    return (grow_size > 0) ? 0 : size;
+    return size;
 }
 
 static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
