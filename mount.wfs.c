@@ -189,7 +189,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     struct wfs_inode inode;
     inode.inode_number = get_largest_inumber() + 1;
     inode.deleted = 0;
-    inode.mode = mode;
+    inode.mode = S_IFDIR;
     inode.uid = getuid();
     inode.gid = getgid();
     inode.flags = 0;
@@ -245,9 +245,9 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     }
     printf("data updated\n");
     // Create new log entry for parent
-    struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + sizeof(*data));
+    struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + new_parent_inode.size);
     new_parent_log->inode = new_parent_inode;
-    memcpy(new_parent_log->data, data, sizeof(*data));
+    memcpy(new_parent_log->data, data, new_parent_inode.size);
     printf("new parent log inode: %d\n", new_parent_log->inode.inode_number);
     for (struct wfs_dentry *d = (struct wfs_dentry *)new_parent_log->data; d < (struct wfs_dentry *)new_parent_log->data + new_parent_inode.size; d+=sizeof(struct wfs_dentry)) {
         printf("current entry name: %s, number %ld\n", d->name, d->inode_number);
@@ -258,8 +258,8 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     printf("mapped disk location %p\n", mapped_disk);
     printf("current head: %p, new head: %p, max head: %p\n", mapped_disk + ((struct wfs_sb *)mapped_disk)->head, mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log), mapped_disk + DISK_SIZE);
     if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
-    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log, sizeof(*new_parent_log));
-    ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_parent_log);
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log, sizeof(new_parent_inode) + new_parent_inode.size);
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(new_parent_inode) + new_parent_inode.size;
 
     // Free allocated space
     free(new_log);
