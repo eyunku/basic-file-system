@@ -7,7 +7,14 @@
 
 static char *mapped_disk = NULL; // address of disk
 
-static ulong get_largest_inumber() {
+
+static int fsck() {
+    struct wfs_sb superblock = {
+        .magic = WFS_MAGIC,
+        .head = sizeof(struct wfs_sb),
+    };
+    memcpy(mapped_disk, &superblock, sizeof(superblock));
+
     ulong max_inode_number = 0;
     char *current_position = mapped_disk + sizeof(struct wfs_sb);
 
@@ -18,17 +25,10 @@ static ulong get_largest_inumber() {
         current_position += (sizeof(struct wfs_inode) + current_entry->inode.size);
     }
 
-    return max_inode_number;
-}
+    printf("MAX INODE NUMBER: %ld\n", max_inode_number);
 
-static int fsck() {
-    struct wfs_sb superblock = {
-        .magic = WFS_MAGIC,
-        .head = sizeof(struct wfs_sb),
-    };
-    memcpy(mapped_disk, &superblock, sizeof(superblock));
-
-    for(ulong inode_number = 0; inode_number < get_largest_inumber(); inode_number++) {
+    for(ulong inode_number = 0; inode_number < max_inode_number; inode_number++) {
+        printf("entered for loop\n");
         char *current_position = mapped_disk + sizeof(struct wfs_sb);
         struct wfs_inode *latest_matching_entry = NULL;
         
@@ -46,7 +46,7 @@ static int fsck() {
     }
     // clear the rest of the file
     for (char* p = mapped_disk + ((struct wfs_sb *)mapped_disk)->head; p < mapped_disk + DISK_SIZE; p++) {
-        p = 0;
+        *p = 0;
     }
 
 
