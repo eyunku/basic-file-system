@@ -4,51 +4,46 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-
-static char *mapped_disk = NULL; // address of disk
-
+static char *mapped_disk = NULL;  // address of the original disk
+static char *new_mapped_disk = NULL;  // address of the new disk
 
 static int fsck() {
-    struct wfs_sb superblock = {
-        .magic = WFS_MAGIC,
-        .head = sizeof(struct wfs_sb),
-    };
-    memcpy(mapped_disk, &superblock, sizeof(superblock));
-
     ulong max_inode_number = 0;
+
+    struct wfs_sb *superblock = (struct wfs_sb *)mapped_disk;
     char *current_position = mapped_disk + sizeof(struct wfs_sb);
 
-    while(current_position < mapped_disk + ((struct wfs_sb *)mapped_disk)->head) {
+    while (current_position < mapped_disk + superblock->head) {
         struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
         if (current_entry->inode.inode_number > max_inode_number)
             max_inode_number = current_entry->inode.inode_number;
-        current_position += (sizeof(struct wfs_inode) + current_entry->inode.size);
+        current_position += sizeof(struct wfs_inode) + current_entry->inode.size;
     }
+    new_mapped_disk = malloc(DISK_SIZE);
+    struct wfs_sb *new_superblock = (struct wfs_sb *)new_mapped_disk;
+    new_superblock->magic = WFS_MAGIC;
+    new_superblock->head = sizeof(struct wfs_sb);
 
-    printf("MAX INODE NUMBER: %ld\n", max_inode_number);
-
-    for(ulong inode_number = 0; inode_number < max_inode_number; inode_number++) {
-        printf("entered for loop\n");
-        char *current_position = mapped_disk + sizeof(struct wfs_sb);
+    for (ulong inode_number = 0; inode_number <= max_inode_number; inode_number++) {
         struct wfs_inode *latest_matching_entry = NULL;
-        
-        while (current_position < mapped_disk + ((struct wfs_sb *)mapped_disk)->head) {
+        current_position = mapped_disk + sizeof(struct wfs_sb);
+
+        while (current_position < mapped_disk + superblock->head) {
             struct wfs_log_entry *current_entry = (struct wfs_log_entry *)current_position;
             if (current_entry->inode.inode_number == inode_number)
                 latest_matching_entry = &(current_entry->inode);
-            current_position += current_entry->inode.size + sizeof(struct wfs_inode);
+            current_position += sizeof(struct wfs_inode) + current_entry->inode.size;
         }
-        
-        // Update the log
-        if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*latest_matching_entry) + latest_matching_entry->size> mapped_disk + DISK_SIZE) return -ENOSPC;
-        memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, (struct wfs_log_entry *) latest_matching_entry, sizeof(*latest_matching_entry) + latest_matching_entry->size);
-        ((struct wfs_sb *)mapped_disk)->head += sizeof(*latest_matching_entry) + latest_matching_entry->size;
-    }
-    // clear the rest of the file
-    for (char* p = mapped_disk + ((struct wfs_sb *)mapped_disk)->head; p < mapped_disk + DISK_SIZE; p++) {
-        *p = 0;
+
+        if (latest_matching_entry != NULL) {
+            memcpy(new_mapped_disk + new_superblock->head, latest_matching_entry, sizeof(*latest_matching_entry) + latest_matching_entry->size);
+            new_superblock->head += sizeof(*latest_matching_entry) + latest_matching_entry->size;
+        }
     }
 
+    memset(new_mapped_disk + new_superblock->head, 0, DISK_SIZE - new_superblock->head);
+    memcpy(mapped_disk, new_mapped_disk, DISK_SIZE);
+    free(new_mapped_disk);
 
     return 0;
 }
