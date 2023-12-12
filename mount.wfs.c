@@ -151,6 +151,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
 
     // Create a new log entry for the file
     struct wfs_log_entry *new_log = malloc(sizeof(struct wfs_inode));
+
     // Set the mode and other attributes based on the provided arguments
     struct wfs_inode inode;
     inode.inode_number = get_largest_inumber() + 1;
@@ -165,26 +166,74 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     inode.ctime = time(NULL);
     inode.links = 1;
     new_log->inode = inode;
+
     // Update the log
     if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
 
     free(new_log);
-    
+
+    // Update parent
+    char name[MAX_FILE_NAME_LEN] = {0};
+    char parent_path[MAX_PATH_LEN] = {0};
+    parsepath(name, parent_path, path);
+
+    // Create directory entry for new file
+    struct wfs_dentry *new_dentry = malloc(sizeof(struct wfs_dentry));
+    strcpy(new_dentry->name, name);
+    new_dentry->inode_number = inode.inode_number;
+
+    // Get existing parent inode
+    struct wfs_inode *parent_inode = read_path(parent_path);
+    if (parent_inode == NULL) return -ENOENT;
+
+    struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode;
+
+    // Create new inode entry for parent
+    struct wfs_inode new_parent_inode;
+    new_parent_inode.inode_number = parent_log->inode.inode_number;
+    new_parent_inode.deleted = 0;
+    new_parent_inode.mode = parent_log->inode.mode;
+    new_parent_inode.uid = parent_log->inode.uid;
+    new_parent_inode.gid = parent_log->inode.gid;
+    new_parent_inode.flags = parent_log->inode.flags;
+    new_parent_inode.size = parent_log->inode.size + sizeof(*new_dentry);
+    new_parent_inode.atime = time(NULL);
+    new_parent_inode.mtime = time(NULL);
+    new_parent_inode.ctime = time(NULL);
+    new_parent_inode.links = parent_log->inode.links;
+
+    // Update data
+    char *data = malloc(new_parent_inode.size);
+    memcpy(data, parent_log->data, parent_log->inode.size);
+    memcpy(data + parent_log->inode.size, new_dentry, sizeof(*new_dentry));
+
+    // Create new log entry for parent
+    struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + new_parent_inode.size);
+    new_parent_log->inode = new_parent_inode;
+    memcpy(new_parent_log->data, data, new_parent_inode.size);
+
+    // Update the log
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log, sizeof(new_parent_inode) + new_parent_inode.size);
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(new_parent_inode) + new_parent_inode.size;
+
+    // Free allocated space
+    free(new_dentry);
+    free(data);
+    free(new_parent_log);
+
     return 0;
 }
 
 static int wfs_mkdir(const char *path, mode_t mode) {
-    printf("mkdir called with path: %s\n", path);
     // If pathname already exists, or is a symbolic link, fail with EEXIST
     if (read_path(path) != NULL) return -EEXIST;
-    // // If mode is not a directory
-    // if (!S_ISDIR(mode)) return -EISNAM;
 
-    printf("creating new log\n");
     // Create a new log entry for the directory
     struct wfs_log_entry *new_log = malloc(sizeof(struct wfs_inode));
+
     // Set the mode and other attributes based on the provided arguments
     struct wfs_inode inode;
     inode.inode_number = get_largest_inumber() + 1;
@@ -199,29 +248,30 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     inode.ctime = time(NULL);
     inode.links = 1;
     new_log->inode = inode;
+
     // Update the log
     if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_log, sizeof(*new_log));
     ((struct wfs_sb *)mapped_disk)->head += sizeof(*new_log);
 
-    printf("updating parent\n");
+    free(new_log);
+
     // Update parent
     char name[MAX_FILE_NAME_LEN] = {0};
     char parent_path[MAX_PATH_LEN] = {0};
-    printf("parsing path %s\n", path);
     parsepath(name, parent_path, path);
-    printf("path parsed to be name: %s, parent path: %s\n", name, parent_path);
+
     // Create directory entry for new directory
     struct wfs_dentry *new_dentry = malloc(sizeof(struct wfs_dentry));
     strcpy(new_dentry->name, name);
     new_dentry->inode_number = inode.inode_number;
-    printf("inode number: %ld, name: %s\n", new_dentry->inode_number, new_dentry->name);
+
     // Get existing parent inode
-    printf("reading path %s\n", parent_path);
     struct wfs_inode *parent_inode = read_path(parent_path);
     if (parent_inode == NULL) return -ENOENT;
-    printf("parsepath successful\n");
+
     struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode;
+
     // Create new inode entry for parent
     struct wfs_inode new_parent_inode;
     new_parent_inode.inode_number = parent_log->inode.inode_number;
@@ -235,38 +285,27 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     new_parent_inode.mtime = time(NULL);
     new_parent_inode.ctime = time(NULL);
     new_parent_inode.links = parent_log->inode.links;
-    printf("parent inode initialized\n");
+
     // Update data
     char *data = malloc(new_parent_inode.size);
     memcpy(data, parent_log->data, parent_log->inode.size);
     memcpy(data + parent_log->inode.size, new_dentry, sizeof(*new_dentry));
-    for (struct wfs_dentry *d = (struct wfs_dentry *)data; d < (struct wfs_dentry *)data + new_parent_inode.size; d+=sizeof(struct wfs_dentry)) {
-        printf("current entry name: %s, number %ld\n", d->name, d->inode_number);
-    }
-    printf("data updated\n");
+
     // Create new log entry for parent
     struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + new_parent_inode.size);
     new_parent_log->inode = new_parent_inode;
     memcpy(new_parent_log->data, data, new_parent_inode.size);
-    printf("new parent log inode: %d\n", new_parent_log->inode.inode_number);
-    for (struct wfs_dentry *d = (struct wfs_dentry *)new_parent_log->data; d < (struct wfs_dentry *)new_parent_log->data + new_parent_inode.size; d+=sizeof(struct wfs_dentry)) {
-        printf("current entry name: %s, number %ld\n", d->name, d->inode_number);
-    }
-    printf("new log entry copied\n");
+
     // Update the log
-    printf("attempting to copy to disk\n");
-    printf("mapped disk location %p\n", mapped_disk);
-    printf("current head: %p, new head: %p, max head: %p\n", mapped_disk + ((struct wfs_sb *)mapped_disk)->head, mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log), mapped_disk + DISK_SIZE);
     if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
     memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log, sizeof(new_parent_inode) + new_parent_inode.size);
     ((struct wfs_sb *)mapped_disk)->head += sizeof(new_parent_inode) + new_parent_inode.size;
 
     // Free allocated space
-    free(new_log);
+    free(new_dentry);
     free(data);
     free(new_parent_log);
 
-    printf("mkdir finished successfully??\n");
     return 0;
 }
 
