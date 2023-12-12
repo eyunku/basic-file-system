@@ -10,7 +10,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
-#include <sys/types.h>
 
 #define MAX_FILE_NAME_LEN 32
 #define MAX_PATH_LEN 100

@@ -238,7 +238,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     struct wfs_inode inode;
     inode.inode_number = get_largest_inumber() + 1;
     inode.deleted = 0;
-    inode.mode = S_IFDIR;
+    inode.mode = S_IFDIR | mode;
     inode.uid = getuid();
     inode.gid = getgid();
     inode.flags = 0;
@@ -428,60 +428,119 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
 }
 
 static int wfs_unlink(const char *path) {
-    // struct wfs_inode *inode = read_path(path);
-    // if (inode == NULL) return -ENOENT;
+    struct wfs_inode *unlink_inode = read_path(path);
 
-    // // Mark the entry as deleted in the log
-    // struct wfs_log_entry *unlink_log;
-    // unlink_log = malloc(sizeof(struct wfs_inode));
-    // unlink_log->inode = *inode;
-    // unlink_log->inode.deleted = 1;
-    // unlink_log->inode.size = 0; // No need to copy old data into new deleted log entry
+    unlink_inode->links--;
+    if (unlink_inode->links == 0)
+        unlink_inode->deleted = 1;
 
+    // Update parent
+    char unlink_name[MAX_FILE_NAME_LEN] = {0};
+    char parent_path[MAX_PATH_LEN] = {0};
+    parsepath(unlink_name, parent_path, path);
 
-    // // Update the log
-    // if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head > mapped_disk + DISK_SIZE) {
-    //     free(unlink_log);
-    //     return -ENOSPC;
-    // }
+    // Get existing parent inode
+    struct wfs_inode *parent_inode = read_path(parent_path);
+    if (parent_inode == NULL) return -ENOENT;
 
-    // memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, unlink_log, sizeof(struct wfs_inode));
-    // ((struct wfs_sb *)mapped_disk)->head += sizeof(struct wfs_inode);
+    struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode;
 
-    // free(unlink_log);
+    // Create new inode entry for parent
+    struct wfs_inode new_parent_inode;
+    new_parent_inode.inode_number = parent_log->inode.inode_number;
+    new_parent_inode.deleted = 0;
+    new_parent_inode.mode = parent_log->inode.mode;
+    new_parent_inode.uid = parent_log->inode.uid;
+    new_parent_inode.gid = parent_log->inode.gid;
+    new_parent_inode.flags = parent_log->inode.flags;
+    new_parent_inode.size = parent_log->inode.size - sizeof(struct wfs_dentry);
+    new_parent_inode.atime = time(NULL);
+    new_parent_inode.mtime = time(NULL);
+    new_parent_inode.ctime = time(NULL);
+    new_parent_inode.links = parent_log->inode.links;
 
-    // char *path_copy = strdup(path);
-    // char base_name[MAX_FILE_NAME_LEN]; char dir_name[MAX_PATH_LEN];
-    // parsepath(base_name, dir_name, path_copy);
-    // free(path_copy);
+    // Update data
+    char *data = malloc(new_parent_inode.size);
+    int data_position = 0;
+    for (struct wfs_dentry *dentry = (struct wfs_dentry *)parent_log->data; (char*)dentry < (char*)parent_log->data + parent_log->inode.size; dentry++) {
+        if (!strcmp(dentry->name, unlink_name))
+            continue;
+        memcpy(data + data_position, dentry, sizeof(struct wfs_dentry));
+        data_position += sizeof(struct wfs_dentry);
+    }
 
-    // ulong parent_inode_number = get_inumber(dir_name);
-    // if (parent_inode_number == -1) return -ENOENT; // Error: Parent directory not found
+    // Create new log entry for parent
+    struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + new_parent_inode.size);
+    new_parent_log->inode = new_parent_inode;
+    memcpy(new_parent_log->data, data, new_parent_inode.size);
 
-  
-    // struct wfs_log_entry *parent_log_entry = (struct wfs_log_entry *)get_inode(parent_inode_number);
-    // struct wfs_dentry *parent_dir_entry = (struct wfs_dentry *)parent_log_entry->data;
-    
-    // // Make a log entry for the new parent
-    // struct wfs_log_entry *new_parent_log_entry;
-    // new_parent_log_entry = malloc(sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry));
-    // new_parent_log_entry->inode = parent_log_entry->inode;
-    // new_parent_log_entry->inode.size = parent_log_entry->inode.size - sizeof(struct wfs_dentry);
-    // int directory_offset = 0;
-    // while (directory_offset < parent_log_entry->inode.size) {
-    //     // Copy over all entries except the deleted one
-    //     if (!strcmp(parent_dir_entry->name, base_name)) {
-    //         memcpy(new_parent_log_entry->data, parent_dir_entry, sizeof(struct wfs_dentry));
-    //     }
-    //     directory_offset += sizeof(struct wfs_dentry);
-    //     parent_dir_entry++;
-    // }
+    // Update the log
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log, sizeof(new_parent_inode) + new_parent_inode.size);
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(new_parent_inode) + new_parent_inode.size;
 
-    // // Write the new parent to disk
-    // memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log_entry, sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry));
-    // ((struct wfs_sb *)mapped_disk)->head += sizeof(struct wfs_inode) + parent_log_entry->inode.size - sizeof(struct wfs_dentry);
+    // Free allocated space
+    free(data);
+    free(new_parent_log);
 
-    // free(new_parent_log_entry);
+    return 0;
+}
+
+static int wfs_rmdir(const char *path) {
+    struct wfs_inode *unlink_inode = read_path(path);
+
+    unlink_inode->links--;
+    if (unlink_inode->links == 0)
+        unlink_inode->deleted = 1;
+
+    // Update parent
+    char unlink_name[MAX_FILE_NAME_LEN] = {0};
+    char parent_path[MAX_PATH_LEN] = {0};
+    parsepath(unlink_name, parent_path, path);
+
+    // Get existing parent inode
+    struct wfs_inode *parent_inode = read_path(parent_path);
+    if (parent_inode == NULL) return -ENOENT;
+
+    struct wfs_log_entry *parent_log = (struct wfs_log_entry *)parent_inode;
+
+    // Create new inode entry for parent
+    struct wfs_inode new_parent_inode;
+    new_parent_inode.inode_number = parent_log->inode.inode_number;
+    new_parent_inode.deleted = 0;
+    new_parent_inode.mode = parent_log->inode.mode;
+    new_parent_inode.uid = parent_log->inode.uid;
+    new_parent_inode.gid = parent_log->inode.gid;
+    new_parent_inode.flags = parent_log->inode.flags;
+    new_parent_inode.size = parent_log->inode.size - sizeof(struct wfs_dentry);
+    new_parent_inode.atime = time(NULL);
+    new_parent_inode.mtime = time(NULL);
+    new_parent_inode.ctime = time(NULL);
+    new_parent_inode.links = parent_log->inode.links;
+
+    // Update data
+    char *data = malloc(new_parent_inode.size);
+    int data_position = 0;
+    for (struct wfs_dentry *dentry = (struct wfs_dentry *)parent_log->data; (char*)dentry < (char*)parent_log->data + parent_log->inode.size; dentry++) {
+        if (!strcmp(dentry->name, unlink_name))
+            continue;
+        memcpy(data + data_position, dentry, sizeof(struct wfs_dentry));
+        data_position += sizeof(struct wfs_dentry);
+    }
+
+    // Create new log entry for parent
+    struct wfs_log_entry *new_parent_log = malloc(sizeof(new_parent_inode) + new_parent_inode.size);
+    new_parent_log->inode = new_parent_inode;
+    memcpy(new_parent_log->data, data, new_parent_inode.size);
+
+    // Update the log
+    if (mapped_disk + ((struct wfs_sb *)mapped_disk)->head + sizeof(*new_parent_log) > mapped_disk + DISK_SIZE) return -ENOSPC;
+    memcpy(mapped_disk + ((struct wfs_sb *)mapped_disk)->head, new_parent_log, sizeof(new_parent_inode) + new_parent_inode.size);
+    ((struct wfs_sb *)mapped_disk)->head += sizeof(new_parent_inode) + new_parent_inode.size;
+
+    // Free allocated space
+    free(data);
+    free(new_parent_log);
 
     return 0;
 }
@@ -494,15 +553,10 @@ static struct fuse_operations wfs_ops = {
     .write      = wfs_write,
     .readdir    = wfs_readdir,
     .unlink     = wfs_unlink,
+    .rmdir      = wfs_rmdir,
 };
 
 int main(int argc, char *argv[]) {
-    // printf("running test on parsepath\n");
-    // char name[100]; char parent_path[100];
-    // char test_path[11] = "/a";
-    // parsepath(name, parent_path, test_path);
-    // printf("parses to name: %s, parent path: %s\n", name, parent_path);
-
     if (argc < 3 || argv[argc - 2][0] == '-' || argv[argc - 1][0] == '-') {
         fprintf(stderr, "Usage: %s [FUSE options] disk_path mount_point\n", argv[0]);
         exit(EXIT_FAILURE);
